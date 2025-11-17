@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client-Side Video Compressor</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        #progress { margin-top: 20px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        button:disabled { background: #ccc; }
+        video { max-width: 100%; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Client-Side Video Compressor</h1>
+    <p>Upload your video (processed entirely on your device). We'll compress it using AV1 codec for high efficiency, reduce size significantly while aiming to preserve quality, and apply a sharpness filter.</p>
+    
+    <input type="file" id="videoInput" accept="video/*">
+    <button id="compressBtn" disabled>Compress Video</button>
+    <div id="progress"></div>
+    <video id="originalVideo" controls></video>
+    <video id="compressedVideo" controls></video>
+    <a id="downloadLink" style="display: none;">Download Compressed Video</a>
+
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+    <script>
+        const { createFFmpeg, fetchFile } = FFmpeg;
+        const ffmpeg = createFFmpeg({ 
+            log: true,
+            corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js'
+        });
+
+        const videoInput = document.getElementById('videoInput');
+        const compressBtn = document.getElementById('compressBtn');
+        const progress = document.getElementById('progress');
+        const originalVideo = document.getElementById('originalVideo');
+        const compressedVideo = document.getElementById('compressedVideo');
+        const downloadLink = document.getElementById('downloadLink');
+
+        // Check for cross-origin isolation (required for SharedArrayBuffer)
+        if (!self.crossOriginIsolated) {
+            progress.innerHTML = '<p style="color: red;">Warning: This app requires cross-origin isolation for best performance. Deploy on a server with COOP/COEP headers.</p>';
+        }
+
+        async function loadFFmpeg() {
+            try {
+                await ffmpeg.load();
+                progress.innerHTML = 'FFmpeg loaded successfully.';
+            } catch (err) {
+                progress.innerHTML = 'Error loading FFmpeg: ' + err.message;
+            }
+        }
+
+        videoInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                originalVideo.src = URL.createObjectURL(file);
+                compressBtn.disabled = false;
+                progress.innerHTML = 'Ready to compress.';
+            }
+        });
+
+        compressBtn.addEventListener('click', async () => {
+            compressBtn.disabled = true;
+            progress.innerHTML = 'Compressing... This may take a while depending on video length and your device.';
+
+            const file = videoInput.files[0];
+            const inputName = 'input.mp4';
+            const outputName = 'output.mkv'; // Using MKV container for AV1
+
+            try {
+                // Write input file to FFmpeg filesystem
+                ffmpeg.FS('writeFile', inputName, await fetchFile(file));
+
+                // Run FFmpeg command:
+                // - Use AV1 codec (libaom-av1) for high compression efficiency
+                // - CRF 30: Balances quality and size (lower CRF = better quality, higher file size; adjust as needed, e.g., 25-35 for ~90% reduction depending on content)
+                // - Preset 'medium' for balance (slower presets give better compression)
+                // - Scale to max 1080p if larger
+                // - Unsharp filter for improved sharpness: luma_msize_x=5:luma_msize_y=5:luma_amount=1.0 (adjust for more/less sharpness)
+                // - yuv420p for compatibility
+                await ffmpeg.run(
+                    '-i', inputName,
+                    '-c:v', 'libaom-av1',  // AV1 codec for best compression ratio
+                    '-crf', '30',          // Quality control: 0=lossless, 63=worst; 30 is a good starting point for visible quality preservation
+                    '-b:v', '0',           // Let CRF handle bitrate
+                    '-cpu-used', '5',      // Speed/quality tradeoff for AV1 (0=slowest/best, 8=fastest/worst)
+                    '-vf', "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2,unsharp=5:5:1.0:5:5:0.0",
+                    '-pix_fmt', 'yuv420p',
+                    '-strict', 'experimental',  // For AV1 in some containers
+                    outputName
+                );
+
+                // Read output
+                const data = ffmpeg.FS('readFile', outputName);
+                const blob = new Blob([data.buffer], { type: 'video/mkv' });
+                const url = URL.createObjectURL(blob);
+
+                // Display and download
+                compressedVideo.src = url;
+                downloadLink.href = url;
+                downloadLink.download = 'compressed_video.mkv';
+                downloadLink.style.display = 'block';
+                downloadLink.innerText = 'Download Compressed Video';
+
+                // Get sizes for comparison
+                const originalSize = (file.size / 1024 / 1024).toFixed(2) + ' MB';
+                const compressedSize = (blob.size / 1024 / 1024).toFixed(2) + ' MB';
+                progress.innerHTML = `Compression complete! Original: ${originalSize}, Compressed: ${compressedSize}`;
+
+            } catch (err) {
+                progress.innerHTML = 'Error: ' + err.message;
+            } finally {
+                compressBtn.disabled = false;
+            }
+        });
+
+        // Load FFmpeg on page load
+        loadFFmpeg();
+    </script>
+</body>
+</html>
